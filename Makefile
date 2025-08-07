@@ -99,7 +99,7 @@ DISABLE_LOGGING ?= false
 
 
 
-.PHONY: server client stop clear check-cache clean-cache build build-server build-server-prod build-client nuke help
+.PHONY: server client stop clear check-cache clean-cache build build-server build-server-prod build-client build-automation nuke help compose-up compose-down compose-client compose-logs compose-build
 
 # Default target: show help
 help: ## Show this help message
@@ -119,10 +119,18 @@ help: ## Show this help message
 	@echo "  make check-cache     - Show cached model status and sizes"
 	@echo "  make clean-cache     - Remove cached models (force re-download)"
 	@echo ""
+	@echo "Docker Compose (Orchestrated Services):"
+	@echo "  make compose-up      - Start all services with Windows automation"
+	@echo "  make compose-client  - Run interactive client with full stack"
+	@echo "  make compose-down    - Stop and remove all compose services"
+	@echo "  make compose-logs    - View logs from all services"
+	@echo "  make compose-build   - Build all compose services"
+	@echo ""
 	@echo "Build Options:"
 	@echo "  make build-server    - Build server (fast, with cache, ~14GB)"
 	@echo "  make build-server-prod - Build production server (smaller, ~10GB)"
 	@echo "  make build-client    - Build client image"
+	@echo "  make build-automation - Build Windows automation service"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make client VAD_THRESHOLD=0.6 LOG_VERBOSE=true"
@@ -331,3 +339,82 @@ build-client: ## Build client image
 	@echo "🔨 Building GPU client image..."
 	docker build -f docker/Dockerfile.client -t whisperlive-client .
 	@echo "✅ GPU Client image built successfully!"
+
+build-automation: ## Build Windows automation service
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║              Building Windows Automation Service              ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "🔨 Building automation service with WSL interop bridge..."
+	docker build -f docker/Dockerfile.automation -t whisper-automation .
+	@echo "✅ Windows automation service built successfully!"
+
+# ╔════════════════════════════════════════════════════════════════╗
+# ║                     DOCKER COMPOSE TARGETS                    ║
+# ║              Orchestrated Multi-Service Deployment            ║
+# ╚════════════════════════════════════════════════════════════════╝
+
+compose-build: ## Build all Docker Compose services
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║                Building All Compose Services                  ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "🔨 Building server, client, and automation services..."
+	docker-compose build --parallel
+	@echo "✅ All services built successfully!"
+
+compose-up: ## Start all services (server + automation) in background
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║                    Starting WhisperLive Stack                 ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "🚀 Starting server and Windows automation service..."
+	@echo "   📁 Setting up output directories..."
+	@mkdir -p "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
+	@chmod 755 "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
+	VAD_THRESHOLD=$(VAD_THRESHOLD) \
+	TRIGGER_WORDS='$(TRIGGER_WORDS)' \
+	WSL_AUTO_TYPE=$(WSL_AUTO_TYPE) \
+	WSL_TYPE_DELAY_MS=$(WSL_TYPE_DELAY_MS) \
+	TEXT_STABILITY_DELAY=$(TEXT_STABILITY_DELAY) \
+	docker-compose up -d server automation
+	@echo "✅ Services started in background!"
+	@echo "🔗 Server: http://localhost:9090"
+	@echo "🔗 Automation: http://localhost:8080"
+	@echo ""
+	@echo "💡 Host service recommended: ./scripts/start_windows_automation_service.sh"
+	@echo "Next: Run 'make compose-client' for interactive transcription"
+
+compose-client: ## Run interactive client with full orchestrated stack
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║                  WhisperLive Compose Client                   ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "🎤 Starting orchestrated client with Windows automation..."
+	@if [ -n "$(TRIGGER_WORDS)" ]; then \
+		echo "🎯 Trigger Words: $(TRIGGER_WORDS)"; \
+		echo "⌨️  Windows Auto-Typing: $(WSL_AUTO_TYPE)"; \
+	fi
+	@echo ""
+	VAD_THRESHOLD=$(VAD_THRESHOLD) \
+	TRIGGER_WORDS='$(TRIGGER_WORDS)' \
+	WSL_AUTO_TYPE=$(WSL_AUTO_TYPE) \
+	WSL_TYPE_DELAY_MS=$(WSL_TYPE_DELAY_MS) \
+	TEXT_STABILITY_DELAY=$(TEXT_STABILITY_DELAY) \
+	docker-compose run --rm client
+
+compose-down: ## Stop and remove all compose services
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║                   Stopping Compose Services                   ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "🛑 Stopping all orchestrated services..."
+	docker-compose down
+	@echo "✅ All services stopped and removed!"
+
+compose-logs: ## View logs from all running compose services
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║                      Service Logs                             ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	docker-compose logs -f

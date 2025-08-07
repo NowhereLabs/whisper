@@ -1,0 +1,123 @@
+services:
+  # Windows automation service - Hybrid approach
+  # Checks for host service, starts container fallback if needed
+  automation:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.automation  
+    container_name: whisper-automation
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount for fallback container mode (if host service fails)
+      - /mnt:/mnt
+      - /run/WSL:/run/WSL
+    environment:
+      - WSL_INTEROP=${WSL_INTEROP:-/run/WSL/interop}
+      - AUTOMATION_MODE=hybrid  # hybrid, container, or host
+    command: >
+      sh -c "
+        echo '🔧 Windows Automation Service - Hybrid Mode'
+        echo '📍 Checking if host service is already running...'
+        
+        if wget -q --spider http://host.docker.internal:8080/health --timeout=3; then
+          echo '✅ Host service found - acting as health check only'
+          echo 'Container will monitor host service availability'
+          while wget -q --spider http://host.docker.internal:8080/health --timeout=5; do
+            sleep 30
+          done
+          echo '❌ Host service became unavailable - container should restart'
+          exit 1
+        else
+          echo '🚀 No host service - starting container automation service'
+          echo '⚠️  Note: Container PowerShell may have limitations'
+          python3 windows_sidecar.py
+        fi
+      "
+    restart: unless-stopped
+    networks:
+      - whisper-network
+
+  # GPU transcription server
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gpu
+    container_name: whisper-server
+    ports:
+      - "9090:9090"
+    volumes:
+      # Persistent model cache
+      - whisper-models:/root/.cache/whisper-live
+      - huggingface-models:/root/.cache/huggingface
+      - openvino-models:/root/.cache/openvino_whisper_models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: python3 run_server.py --port 9090 --backend faster_whisper
+    restart: unless-stopped
+    networks:
+      - whisper-network
+
+  # Audio client with automatic Windows typing
+  client:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.client
+    container_name: whisper-client
+    depends_on:
+      - server
+      - automation
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    volumes:
+      # WSL2 audio passthrough
+      - /mnt/wslg:/mnt/wslg
+      # Output logs
+      - ./logs:/output/logs
+      - ./output:/output/output
+    environment:
+      # Audio configuration
+      - PULSE_SERVER=/mnt/wslg/PulseServer
+      - ALSA_PCM_CARD=default
+      - ALSA_PCM_DEVICE=0
+      # Windows automation service URL (prefer host service)
+      - WINDOWS_AUTOMATION_URL=http://host.docker.internal:8080
+      # WhisperLive configuration (can be overridden)
+      - VAD_THRESHOLD=${VAD_THRESHOLD:-0.5}
+      - TRIGGER_WORDS=${TRIGGER_WORDS:-computer}
+      - WSL_AUTO_TYPE=${WSL_AUTO_TYPE:-true}
+      - WSL_TYPE_DELAY_MS=${WSL_TYPE_DELAY_MS:-0}
+      - TEXT_STABILITY_DELAY=${TEXT_STABILITY_DELAY:-1.0}
+    command: >
+      python utils/run_client.py 
+        --server server 
+        --port 9090 
+        --model large-v3
+        --vad_threshold ${VAD_THRESHOLD:-0.5}
+        --trigger_words "${TRIGGER_WORDS:-computer}"
+        --trigger_output_file /output/logs/triggers.log
+        --text_stability_delay ${TEXT_STABILITY_DELAY:-1.0}
+        --wsl_auto_type
+        --type_delay_ms ${WSL_TYPE_DELAY_MS:-0}
+        --log_dir /output/logs
+    stdin_open: true
+    tty: true
+    restart: "no"  # Don't auto-restart client (interactive)
+    networks:
+      - whisper-network
+
+volumes:
+  whisper-models:
+  huggingface-models:
+  openvino-models:
+
+networks:
+  whisper-network:
+    driver: bridge
