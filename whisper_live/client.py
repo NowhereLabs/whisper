@@ -1,6 +1,8 @@
 import os
 import shutil
 import wave
+import sys
+import contextlib
 
 import logging
 import numpy as np
@@ -12,6 +14,19 @@ import uuid
 import time
 import av
 import whisper_live.utils as utils
+
+
+@contextlib.contextmanager
+def suppress_alsa_warnings():
+    """Context manager to suppress ALSA warnings from PyAudio."""
+    original_stderr = sys.stderr
+    try:
+        # Redirect stderr to suppress ALSA warnings
+        with open(os.devnull, 'w') as devnull:
+            sys.stderr = devnull
+            yield
+    finally:
+        sys.stderr = original_stderr
 
 
 class Client:
@@ -41,6 +56,7 @@ class Client:
         target_language="fr",
         translation_callback=None,
         translation_srt_file_path="output_translated.srt",
+        vad_parameters=None,
     ):
         """
         Initializes a Client instance for audio recording and streaming to a server.
@@ -67,6 +83,16 @@ class Client:
             target_language (str, optional): Target language for translation. Defaults to 'fr'.
             translation_callback (callable, optional): A callback function to handle translation results. Default is None.
             translation_srt_file_path (str, optional): The file path to save the translated output SRT file. Default is "output_translated.srt".
+            vad_parameters (dict, optional): Dictionary of VAD (Voice Activity Detection) parameters. Defaults to None.
+                Available parameters:
+                - threshold (float): Speech probability threshold (0.0-1.0). Default: 0.5
+                - neg_threshold (float): End-of-speech detection threshold (0.0-1.0). Default: auto-calculated
+                - min_speech_duration_ms (int): Minimum speech duration in ms (0-5000). Default: 250
+                - max_speech_duration_s (int): Maximum speech duration in seconds (1-300). Default: 30
+                - min_silence_duration_ms (int): Required silence before ending speech in ms (100-5000). Default: 2000
+                - speech_pad_ms (int): Padding around detected speech in ms (0-1000). Default: 400
+                - window_size_samples (int): VAD analysis window size (32-128). Default: 64
+                - return_seconds (bool): Return timestamps in seconds vs samples. Default: False
         """
         self.recording = False
         self.task = "transcribe"
@@ -97,6 +123,9 @@ class Client:
         self.last_translated_segment = None
         if translate:
             self.task = "translate"
+
+        # VAD parameters
+        self.vad_parameters = vad_parameters
 
         self.audio_bytes = None
 
@@ -167,14 +196,12 @@ class Client:
                     self.translation_callback(" ".join(text), segments) # string, list
                 except Exception as e:
                     print(f"[WARN] translation_callback raised: {e}")
-                return
         else:
             if self.transcription_callback and callable(self.transcription_callback):
                 try:
                     self.transcription_callback(" ".join(text), segments) # string, list
                 except Exception as e:
                     print(f"[WARN] transcription_callback raised: {e}")
-                return
         
         if self.log_transcription:
             original_text = [seg["text"] for seg in self.transcript[-4:]]
@@ -271,6 +298,7 @@ class Client:
                     "same_output_threshold": self.same_output_threshold,
                     "enable_translation": self.enable_translation,
                     "target_language": self.target_language,
+                    "vad_parameters": self.vad_parameters,
                 }
             )
         )
@@ -366,15 +394,17 @@ class TranscriptionTeeClient:
         self.output_recording_filename = output_recording_filename
         self.mute_audio_playback = mute_audio_playback
         self.frames = b""
-        self.p = pyaudio.PyAudio()
+        with suppress_alsa_warnings():
+            self.p = pyaudio.PyAudio()
         try:
-            self.stream = self.p.open(
-                format=self.format,
-                channels=self.channels,
-                rate=self.rate,
-                input=True,
-                frames_per_buffer=self.chunk,
-            )
+            with suppress_alsa_warnings():
+                self.stream = self.p.open(
+                    format=self.format,
+                    channels=self.channels,
+                    rate=self.rate,
+                    input=True,
+                    frames_per_buffer=self.chunk,
+                )
         except OSError as error:
             print(f"[WARN]: Unable to access microphone. {error}")
             self.stream = None
@@ -455,14 +485,15 @@ class TranscriptionTeeClient:
             if self.mute_audio_playback:
                 self.stream = None
             else:
-                self.stream = self.p.open(
-                    format=self.p.get_format_from_width(wavfile.getsampwidth()),
-                    channels=wavfile.getnchannels(),
-                    rate=wavfile.getframerate(),
-                    input=True,
-                    output=True,
-                    frames_per_buffer=self.chunk,
-                )
+                with suppress_alsa_warnings():
+                    self.stream = self.p.open(
+                        format=self.p.get_format_from_width(wavfile.getsampwidth()),
+                        channels=wavfile.getnchannels(),
+                        rate=wavfile.getframerate(),
+                        input=True,
+                        output=True,
+                        frames_per_buffer=self.chunk,
+                    )
 
             chunk_duration = self.chunk / float(wavfile.getframerate())
             try:
@@ -790,6 +821,7 @@ class TranscriptionClient(TranscriptionTeeClient):
         target_language="fr",
         translation_callback=None,
         translation_srt_file_path="./output_translated.srt",
+        vad_parameters=None,
     ):
         self.client = Client(
             host,
@@ -808,6 +840,7 @@ class TranscriptionClient(TranscriptionTeeClient):
             transcription_callback=transcription_callback,
             enable_translation=enable_translation,
             target_language=target_language,
+            vad_parameters=vad_parameters,
             translation_callback=translation_callback,
             translation_srt_file_path=translation_srt_file_path,
         )
