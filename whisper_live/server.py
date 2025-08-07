@@ -16,6 +16,26 @@ from whisper_live.backend.base import ServeClientBase
 
 logging.basicConfig(level=logging.INFO)
 
+# VAD Log Filter to suppress VAD console messages (they are handled as events instead)
+class VADLogFilter(logging.Filter):
+    """Filter to suppress VAD-related log messages from faster-whisper and redirect to VAD events"""
+    def filter(self, record):
+        message = record.getMessage()
+        # Suppress VAD-related messages - we handle these as events instead
+        vad_keywords = [
+            "VAD filter removed",
+            "VAD filter kept",
+            "speech timestamps",
+            "voice activity"
+        ]
+        for keyword in vad_keywords:
+            if keyword in message:
+                return False
+        return True
+
+# Apply VAD filter to root logger to catch all VAD messages
+logging.getLogger().addFilter(VADLogFilter())
+
 class ClientManager:
     def __init__(self, max_clients=4, max_connection_time=600):
         """

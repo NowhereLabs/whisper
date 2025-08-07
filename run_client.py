@@ -11,12 +11,16 @@ import time
 class TranscriptionLogger:
     """Comprehensive logging system for transcription analysis"""
     
-    def __init__(self, log_dir="/output", enable_json=True, enable_text=True, verbose=False):
+    def __init__(self, log_dir="/output", enable_json=True, enable_text=True, verbose=False, trigger_output_file=None):
         self.log_dir = log_dir
         self.enable_json = enable_json
         self.enable_text = enable_text
         self.verbose = verbose
+        self.trigger_output_file = trigger_output_file
         self.session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Track logged segments to avoid duplicates
+        self.logged_segments = set()
         
         # Create log directory with proper permissions (readable/writable by all)
         os.makedirs(log_dir, mode=0o755, exist_ok=True)
@@ -63,7 +67,11 @@ class TranscriptionLogger:
             "incomplete_segments": 0,
             "total_duration": 0,
             "total_words": 0,
-            "vad_triggers": 0,
+            "trigger_words_detected": 0,  # Number of trigger word activations
+            "trigger_statements_saved": 0,  # Number of statements saved after triggers
+            "vad_triggers": 0,  # Completed transcription segments (meaningful speech detected)
+            "vad_silence_filters": 0,  # Silence filtering events (background processing)
+            "vad_total_events": 0,  # All VAD events combined
             "segment_sizes": [],
             "segment_durations": [],
             "processing_times": [],
@@ -76,6 +84,19 @@ class TranscriptionLogger:
     def log_segment(self, segment_data, segment_type="transcription"):
         """Log a transcription segment with metadata"""
         with self.lock:
+            # Create a unique identifier for this segment based on content and timing
+            text = segment_data.get("text", "").strip()
+            start_time = segment_data.get("start", 0)
+            end_time = segment_data.get("end", 0)
+            segment_key = (text, start_time, end_time)
+            
+            # Skip if we've already logged this exact segment
+            if segment_key in self.logged_segments:
+                return
+            
+            # Add to logged segments set
+            self.logged_segments.add(segment_key)
+            
             timestamp = datetime.datetime.now()
             current_time = time.time()
             
@@ -166,7 +187,15 @@ class TranscriptionLogger:
     def log_vad_event(self, event_type, details=None):
         """Log VAD-related events"""
         with self.lock:
-            self.stats["vad_triggers"] += 1
+            # Update appropriate statistics based on event type
+            self.stats["vad_total_events"] += 1
+            
+            if event_type == "vad_filter":
+                # Silence filtering events - background processing
+                self.stats["vad_silence_filters"] += 1
+            # Note: No longer counting VAD events as triggers
+            # VAD triggers now only count completed transcription segments
+                
             timestamp = datetime.datetime.now()
             
             event_info = {
@@ -187,6 +216,25 @@ class TranscriptionLogger:
                         f.write(f" - {details}")
                     f.write("\n")
     
+    def log_trigger_event(self, event_type, trigger_word=None, statement=None):
+        """Log trigger word related events"""
+        with self.lock:
+            if event_type == "trigger_detected":
+                self.stats["trigger_words_detected"] += 1
+            elif event_type == "statement_saved":
+                self.stats["trigger_statements_saved"] += 1
+            
+            if self.enable_text and self.verbose:
+                timestamp = datetime.datetime.now()
+                with open(self.text_log_path, 'a', encoding='utf-8') as f:
+                    f.write(f"\n[{timestamp.strftime('%H:%M:%S.%f')[:-3]}] ")
+                    f.write(f"TRIGGER EVENT: {event_type}")
+                    if trigger_word:
+                        f.write(f" - Word: '{trigger_word}'")
+                    if statement:
+                        f.write(f" - Statement: '{statement[:50]}{'...' if len(statement) > 50 else ''}'")
+                    f.write("\n")
+    
     def write_summary(self):
         """Write final summary statistics"""
         with self.lock:
@@ -197,26 +245,37 @@ class TranscriptionLogger:
             
             summary = f"""
 {"="*80}
-TRANSCRIPTION SESSION SUMMARY
+🎤 TRANSCRIPTION SESSION SUMMARY 🎤
 {"="*80}
 Session ID: {self.session_id}
 End Time: {datetime.datetime.now().isoformat()}
 
-STATISTICS:
+📊 STATISTICS:
 - Total Segments: {self.stats['total_segments']}
   - Completed: {self.stats['completed_segments']}
   - Incomplete: {self.stats['incomplete_segments']}
 - Total Duration: {self.stats['total_duration']:.2f} seconds
 - Total Words: {self.stats['total_words']}
-- Average Segment Duration: {avg_duration:.2f} seconds
-- VAD Triggers: {self.stats['vad_triggers']}
+- Average Segment Duration: {avg_duration:.2f} seconds"""
 
-LOG FILES:
+            # Add trigger word statistics with flair if any triggers were detected
+            if self.stats['trigger_words_detected'] > 0 or self.stats['trigger_statements_saved'] > 0:
+                summary += f"""
+
+🎯 TRIGGER WORD DETECTION:
+- Trigger Activations: {self.stats['trigger_words_detected']} 🔥
+- Statements Captured: {self.stats['trigger_statements_saved']} 📝"""
+            
+            summary += f"""
+
+📄 LOG FILES:
 """
             if self.enable_json:
                 summary += f"- JSON: {self.json_log_path}\n"
             if self.enable_text:
                 summary += f"- Text: {self.text_log_path}\n"
+            if self.trigger_output_file and (self.stats['trigger_words_detected'] > 0 or self.stats['trigger_statements_saved'] > 0):
+                summary += f"- Triggers: {self.trigger_output_file}\n"
             
             summary += "="*80
             
@@ -226,7 +285,7 @@ LOG FILES:
             
             print(summary)
 
-def print_client_banner(args):
+def print_client_banner(args, session_id=None):
     """Print a professional client startup banner"""
     print("\n" + "="*80)
     print("                        WHISPERLIVE TRANSCRIPTION CLIENT")
@@ -242,7 +301,11 @@ def print_client_banner(args):
         print(f"Translation:  {args.target_language}")
     if args.trigger_words:
         print(f"Trigger Words: {', '.join(args.trigger_words)}")
-        print(f"Trigger File:  {args.trigger_output_file}")
+        if session_id:
+            trigger_filename = f"triggers_{session_id}.log"
+        else:
+            trigger_filename = os.path.basename(args.trigger_output_file)
+        print(f"Trigger File:  {trigger_filename}")
     print("="*80)
     print("🎤 Starting microphone capture...")
     print("💡 Press Ctrl+C to stop")
@@ -328,6 +391,9 @@ if __name__ == '__main__':
     parser.add_argument('--vad_return_seconds',
                         action='store_true',
                         help='Return timestamps in seconds instead of samples')
+    parser.add_argument('--disable_vad',
+                        action='store_true',
+                        help='Disable Voice Activity Detection (process all audio continuously)')
     
     # Logging Configuration Parameters
     parser.add_argument('--log_dir',
@@ -348,36 +414,29 @@ if __name__ == '__main__':
                         help='Disable all transcription logging')
 
     args = parser.parse_args()
+    
+    # Generate session ID for all logs to use the same timestamp
+    session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    print_client_banner(args)
+    print_client_banner(args, session_id)
     
-    # Setup debug logging in the same directory as other logs
-    debug_log_file = os.path.join(args.log_dir, 'trigger_debug.log')
-    
-    # Configure logging with explicit encoding
-    logger = logging.getLogger('trigger_debug')
-    logger.setLevel(logging.DEBUG)
-    
-    # Remove existing handlers
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    
-    # Create file handler
-    try:
-        # Ensure log directory exists
-        os.makedirs(args.log_dir, mode=0o755, exist_ok=True)
-        file_handler = logging.FileHandler(debug_log_file, mode='w', encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        logger.info(f"Starting trigger word detection with words: {args.trigger_words}")
-    except Exception as e:
-        print(f"Warning: Could not setup debug logging: {e}")
-        logger = None
+    # Debug logging disabled - was only needed for testing
+    logger = None
     
     # Create a lock for thread-safe file writing
     file_lock = threading.Lock()
+    
+    # Update trigger output file to use timestamped filename if trigger words are enabled
+    actual_trigger_output_file = None
+    if args.trigger_words:
+        # Extract directory and extension from the provided path
+        trigger_dir = os.path.dirname(args.trigger_output_file)
+        trigger_base = os.path.basename(args.trigger_output_file)
+        trigger_name, trigger_ext = os.path.splitext(trigger_base)
+        
+        # Create timestamped filename
+        actual_trigger_output_file = os.path.join(trigger_dir, f"triggers_{session_id}{trigger_ext}")
+        args.trigger_output_file = actual_trigger_output_file
     
     # Improved trigger detection state with buffering approach
     trigger_state = {
@@ -404,13 +463,8 @@ if __name__ == '__main__':
         current_time = datetime.datetime.now()
         current_segment_count = len(segments)
         
-        if logger:
-            logger.debug(f"Callback: {current_segment_count} segments, processed_count: {trigger_state['last_processed_segment_count']}")
-        
         # Check if we're in cooldown period
         if trigger_state['cooldown_until'] and current_time < trigger_state['cooldown_until']:
-            if logger:
-                logger.debug(f"In cooldown period, ignoring triggers")
             return
         
         # If we're waiting for complete utterance after trigger
@@ -426,11 +480,6 @@ if __name__ == '__main__':
             if segments_changed:
                 trigger_state['last_change_time'] = current_time
                 trigger_state['waiting_segment_count'] = current_segment_count
-                if logger:
-                    logger.debug(f"New segments arrived while collecting: {current_segment_count}")
-                    for i, seg in enumerate(segments):
-                        logger.debug(f"Buffered Segment {i}: '{seg.get('text', '')}'")
-                    
             # Check if we should finalize the collection
             time_since_change = (current_time - trigger_state['last_change_time']).total_seconds() if trigger_state['last_change_time'] else 0
             stability_reached = time_since_change >= trigger_state['stability_delay']
@@ -440,9 +489,6 @@ if __name__ == '__main__':
             minimum_collection_time = 2.0
             
             should_finalize = collection_timeout_reached or (stability_reached and time_since_trigger >= minimum_collection_time)
-            
-            if logger:
-                logger.debug(f"Collection status - Stable: {stability_reached} ({time_since_change:.1f}s), Timeout: {collection_timeout_reached}, Time since trigger: {time_since_trigger:.1f}s, Finalizing: {should_finalize}")
                 
             if should_finalize:
                 # Extract text from all collected segments using improved buffering strategy
@@ -451,13 +497,6 @@ if __name__ == '__main__':
                     all_text = ' '.join([s.get('text', '').strip() for s in segments])
                     trigger_word = trigger_state['trigger_word'].lower()
                     
-                    if logger:
-                        logger.debug(f"Text extraction - All collected text: '{all_text}'")
-                        logger.debug(f"Text extraction - Looking for trigger: '{trigger_word}'")
-                        logger.debug(f"Text extraction - Total segments collected: {len(segments)}")
-                        for i, seg in enumerate(segments):
-                            logger.debug(f"Segment {i}: '{seg.get('text', '')}'")
-                    
                     # Find the LAST occurrence of trigger word in the complete text (most recent trigger)
                     trigger_pos = all_text.lower().rfind(trigger_word)
                     if trigger_pos >= 0:
@@ -465,23 +504,10 @@ if __name__ == '__main__':
                         post_trigger_text = all_text[trigger_pos + len(trigger_word):].strip()
                         # Clean up common artifacts
                         post_trigger_text = post_trigger_text.lstrip(' ,.!?')
-                        
-                        if logger:
-                            logger.debug(f"Text extraction - Found LAST trigger at position {trigger_pos}")
-                            logger.debug(f"Text extraction - Extracted post-trigger text: '{post_trigger_text}'")
                     else:
                         # Fallback: use segments after trigger segment
                         post_trigger_segments = segments[trigger_state['trigger_segment_index'] + 1:]
                         post_trigger_text = ' '.join([s.get('text', '').strip() for s in post_trigger_segments])
-                        
-                        if logger:
-                            logger.debug(f"Text extraction - Trigger not found in combined text, using segment fallback")
-                            logger.debug(f"Text extraction - Fallback post-trigger text: '{post_trigger_text}'")
-                    
-                    if logger:
-                        logger.debug(f"Text extraction - Extracted text: '{post_trigger_text}'")
-                        logger.debug(f"Text extraction - Text stripped: '{post_trigger_text.strip()}'")
-                        logger.debug(f"Text extraction - Last saved: '{trigger_state['last_saved_text']}'")
                     
                     # Save if we have meaningful content
                     if (post_trigger_text.strip() and 
@@ -503,14 +529,17 @@ if __name__ == '__main__':
                                     os.fsync(f.fileno())
                                 
                                 print(f"\n⚠️  Trigger statement saved: '{post_trigger_text.strip()[:50]}{'...' if len(post_trigger_text.strip()) > 50 else ''}'")
-                                if logger:
-                                    logger.info(f"STATEMENT SAVED: '{post_trigger_text.strip()}'")
+                                
+                                # Log statement saved event
+                                if transcription_logger:
+                                    transcription_logger.log_trigger_event("statement_saved", 
+                                                                        trigger_word=trigger_state['trigger_word'], 
+                                                                        statement=post_trigger_text.strip())
                                 
                                 trigger_state['last_saved_text'] = post_trigger_text.strip()
                                 trigger_state['cooldown_until'] = current_time + datetime.timedelta(seconds=2.0)
                             except Exception as e:
-                                if logger:
-                                    logger.error(f"Failed to write to trigger file: {e}")
+                                print(f"Warning: Failed to write to trigger file: {e}")
                 
                 # Reset state and "clear transcript" by updating processed count
                 trigger_state['waiting'] = False
@@ -522,14 +551,9 @@ if __name__ == '__main__':
                 trigger_state['max_collection_time'] = None
                 trigger_state['last_processed_segment_count'] = current_segment_count  # "Clear" by advancing processed count
                 
-                if logger:
-                    logger.debug(f"Trigger processed, advancing segment count to {current_segment_count}")
         else:
             # Look for triggers only in new segments (beyond last processed count)
             new_segments = segments[trigger_state['last_processed_segment_count']:]
-            
-            if new_segments and logger:
-                logger.debug(f"Checking {len(new_segments)} new segments for triggers")
                 
             for i, segment in enumerate(new_segments):
                 actual_index = trigger_state['last_processed_segment_count'] + i
@@ -549,8 +573,10 @@ if __name__ == '__main__':
                         trigger_state['last_change_time'] = current_time
                         trigger_state['waiting_segment_count'] = current_segment_count
                         
-                        if logger:
-                            logger.info(f"Trigger word '{trigger_word}' found in new segment {actual_index}! Waiting for complete statement...")
+                        # Log trigger detection event
+                        if transcription_logger:
+                            transcription_logger.log_trigger_event("trigger_detected", trigger_word=trigger_word)
+                        
                         print(f"\n💡 Trigger word '{trigger_word}' detected! Listening for complete statement...")
                         return  # Process one trigger at a time
     
@@ -561,21 +587,46 @@ if __name__ == '__main__':
             log_dir=args.log_dir,
             enable_json=not args.disable_json_log,  # Default True unless disabled
             enable_text=not args.disable_text_log,  # Default True unless disabled
-            verbose=args.log_verbose
+            verbose=args.log_verbose,
+            trigger_output_file=actual_trigger_output_file
         )
+        # Override the session_id to use our unified one
+        transcription_logger.session_id = session_id
+        
+        # Update the log paths to use the unified session_id
+        if transcription_logger.enable_json:
+            transcription_logger.json_log_path = os.path.join(args.log_dir, f"transcription_{session_id}.json")
+        if transcription_logger.enable_text:
+            transcription_logger.text_log_path = os.path.join(args.log_dir, f"transcription_{session_id}.log")
+            # Re-write the header with the correct session ID
+            with open(transcription_logger.text_log_path, 'w', encoding='utf-8') as f:
+                f.write(f"WhisperLive Transcription Log\n")
+                f.write(f"Session: {session_id}\n")
+                f.write(f"Started: {datetime.datetime.now().isoformat()}\n")
+                f.write("="*80 + "\n\n")
+            os.chmod(transcription_logger.text_log_path, 0o644)
         print(f"📝 Transcription logging enabled: {args.log_dir}")
         if transcription_logger.enable_json:
-            print(f"   - JSON log: transcription_{transcription_logger.session_id}.json")
+            print(f"   - JSON log: transcription_{session_id}.json")
         if transcription_logger.enable_text:
-            print(f"   - Text log: transcription_{transcription_logger.session_id}.log")
+            print(f"   - Text log: transcription_{session_id}.log")
     
     # Create a combined callback that handles both trigger words and logging
-    def combined_callback(text, segments):
+    def combined_callback(text, segments, vad_event=None):
         try:
-            # Log all segments to transcription logger
+            # Handle VAD events first
+            if vad_event is not None and transcription_logger:
+                event_type = vad_event.get("type")
+                details = vad_event.get("details", {})
+                transcription_logger.log_vad_event(event_type, details)
+                return  # VAD events don't have segments or trigger words to process
+            
+            # Log only completed segments to transcription logger to avoid duplicates
             if transcription_logger:
                 for seg in segments:
-                    transcription_logger.log_segment(seg)
+                    # Only log segments marked as completed to avoid partial duplicates
+                    if seg.get('completed', False):
+                        transcription_logger.log_segment(seg)
             
             # Handle trigger words if specified
             if args.trigger_words:
@@ -598,25 +649,9 @@ if __name__ == '__main__':
     callback_func = combined_callback if (transcription_logger or args.trigger_words) else None
     
     if args.trigger_words:
-        if logger:
-            logger.info(f"Trigger words enabled: {args.trigger_words}")
-            logger.info(f"Output file: {args.trigger_output_file}")
-            logger.info(f"Debug log file: {debug_log_file}")
-        print(f"📝 Debug logging to: {debug_log_file}")
         print(f"🎯 Trigger words: {', '.join(args.trigger_words)}")
+        print(f"📝 Output file: triggers_{session_id}.log")
         print(f"⏱️  Text stability delay: {args.text_stability_delay}s")
-        
-        # Write startup info to debug log immediately
-        try:
-            os.makedirs(args.log_dir, mode=0o755, exist_ok=True)
-            with open(debug_log_file, 'w', encoding='utf-8') as f:
-                f.write(f"STARTUP: {datetime.datetime.now()}\n")
-                f.write(f"Trigger words: {args.trigger_words}\n")
-                f.write(f"Text stability delay: {trigger_state['stability_delay']}s\n")
-                f.write("="*50 + "\n")
-                f.flush()
-        except Exception as e:
-            print(f"Warning: Could not create debug log: {e}")
     
     # Build VAD parameters dictionary from command line arguments
     vad_parameters = {}
@@ -649,7 +684,7 @@ if __name__ == '__main__':
         lang=args.lang,
         translate=args.translate,
         model=args.model,
-        use_vad=True,
+        use_vad=not args.disable_vad,
         save_output_recording=args.save_output_recording,
         output_recording_filename=args.output_file,
         enable_translation=args.enable_translation,

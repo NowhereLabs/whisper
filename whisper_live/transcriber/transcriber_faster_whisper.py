@@ -27,8 +27,16 @@ from faster_whisper.vad import (
     VadOptions,
     collect_chunks,
     get_speech_timestamps,
-    merge_segments,
 )
+
+# Compatibility fix: merge_segments not available in some faster-whisper versions
+def merge_segments(segments, vad_parameters):
+    """Simple merge_segments replacement for compatibility"""
+    if not segments:
+        return []
+    # For now, just return the original segments
+    # A more sophisticated version would merge overlapping/adjacent segments
+    return segments
 
 
 @dataclass

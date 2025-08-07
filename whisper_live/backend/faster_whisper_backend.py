@@ -169,6 +169,7 @@ class ServeClientFasterWhisper(ServeClientBase):
             compute_type=self.compute_type,
             local_files_only=False,
         )
+        
 
     def set_language(self, info):
         """
@@ -214,6 +215,21 @@ class ServeClientFasterWhisper(ServeClientBase):
         if ServeClientFasterWhisper.SINGLE_MODEL:
             ServeClientFasterWhisper.SINGLE_MODEL_LOCK.release()
 
+        # Send VAD event if VAD filtering was applied
+        if self.use_vad and info is not None:
+            if hasattr(info, 'duration') and hasattr(info, 'duration_after_vad'):
+                original_duration = info.duration
+                filtered_duration = info.duration_after_vad
+                removed_duration = original_duration - filtered_duration
+                
+                if removed_duration > 0.01:  # Only send event if significant filtering occurred
+                    self.send_vad_event_to_client("vad_filter", {
+                        "original_duration_s": round(original_duration, 3),
+                        "filtered_duration_s": round(filtered_duration, 3),
+                        "removed_duration_s": round(removed_duration, 3),
+                        "speech_segments": len(result) if result else 0
+                    })
+
         if self.language is None and info is not None:
             self.set_language(info)
         return result
@@ -233,4 +249,16 @@ class ServeClientFasterWhisper(ServeClientBase):
             segments = self.prepare_segments(last_segment)
 
         if len(segments):
+            # Send speech detection event when we have new segments
+            if self.use_vad:
+                first_segment = segments[0] if segments else None
+                last_segment = segments[-1] if segments else None
+                if first_segment and last_segment:
+                    self.send_vad_event_to_client("speech_detected", {
+                        "segment_count": len(segments),
+                        "start_time_s": float(first_segment.get("start", 0)),
+                        "end_time_s": float(last_segment.get("end", 0)),
+                        "total_duration_s": round(float(last_segment.get("end", 0)) - float(first_segment.get("start", 0)), 3)
+                    })
+            
             self.send_transcription_to_client(segments)

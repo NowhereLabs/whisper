@@ -214,6 +214,31 @@ class Client:
                 print(f"\n\nTRANSLATION to {self.target_language}:")
                 utils.print_transcript([seg["text"] for seg in self.translated_transcript[-4:]], translated=True)
 
+    def handle_vad_event(self, vad_event):
+        """
+        Handle VAD (Voice Activity Detection) events received from the server.
+        
+        Args:
+            vad_event (dict): The VAD event data containing event type and details
+        """
+        event_type = vad_event.get("type")
+        details = vad_event.get("details", {})
+        
+        # Call transcription callback with VAD event if it supports it
+        if self.transcription_callback and callable(self.transcription_callback):
+            try:
+                # Try to call callback with VAD event parameter
+                self.transcription_callback("", [], vad_event)
+            except TypeError:
+                # Callback doesn't support VAD events, that's fine - ignore silently
+                pass
+            except Exception as e:
+                # Other errors should not disrupt transcription
+                pass
+        
+        # VAD events are handled by the transcription callback and logged to files
+        # No console output needed here to keep CLI clean
+
     def on_message(self, ws, message):
         """
         Callback function called when a message is received from the server.
@@ -261,6 +286,9 @@ class Client:
         
         if "translated_segments" in message.keys():
             self.process_segments(message["translated_segments"], translated=True)
+        
+        if "vad_event" in message.keys():
+            self.handle_vad_event(message["vad_event"])
 
     def on_error(self, ws, error):
         print(f"[ERROR] WebSocket Error: {error}")

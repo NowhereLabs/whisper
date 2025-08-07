@@ -24,12 +24,12 @@ VAD_MIN_SPEECH_DURATION_MS ?= 250
 # Maximum Speech Duration - Longest continuous speech segment in seconds (Range: 1-300)
 # Longer speech will be split into chunks for processing
 # Default: 30s (prevents memory issues with very long utterances)
-VAD_MAX_SPEECH_DURATION_S ?= 30
+VAD_MAX_SPEECH_DURATION_S ?= 10
 
 # Minimum Silence Duration - Required silence before ending speech in milliseconds (Range: 100-5000)
 # How long to wait in silence before considering speech finished
 # Default: 2000ms (2 seconds of silence ends speech detection)
-VAD_MIN_SILENCE_DURATION_MS ?= 2000
+VAD_MIN_SILENCE_DURATION_MS ?= 300
 
 # Speech Padding - Extra audio added around detected speech in milliseconds (Range: 0-1000)
 # Prevents cutting off speech at beginning/end of detected segments
@@ -45,6 +45,27 @@ VAD_WINDOW_SIZE_SAMPLES ?= 64
 # true = timestamps in seconds, false = timestamps in audio samples
 # Default: false (uses sample-based timestamps)
 VAD_RETURN_SECONDS ?= false
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                         TRIGGER WORD DETECTION                            ║
+# ║                     Activate Recording on Keywords                        ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+
+# Trigger Words - Space-separated list of words that activate recording
+# When any of these words are detected, the following speech is saved
+# Example: "computer alert help" - detects any of these words
+# Default: empty (no trigger word detection)
+TRIGGER_WORDS ?= computer
+
+# Trigger Output File - Where to save triggered transcriptions (absolute path)
+# File will contain timestamped transcriptions after trigger word detection
+# Default: /output/logs/triggers.log (inside Docker container, maps to ./logs/triggers.log)
+TRIGGER_OUTPUT_FILE ?= /output/logs/triggers.log
+
+# Text Stability Delay - Time to wait after text stops changing before saving (seconds)
+# Prevents saving incomplete transcriptions, waits for speech to finish
+# Default: 1.5s (good balance between responsiveness and completeness)
+TEXT_STABILITY_DELAY ?= 1.0
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║                          LOGGING CONFIGURATION                            ║
@@ -78,7 +99,7 @@ DISABLE_LOGGING ?= false
 
 
 
-.PHONY: server client stop check-cache clean-cache build build-server build-server-prod build-client help
+.PHONY: server client stop clear check-cache clean-cache build build-server build-server-prod build-client nuke help
 
 # Default target: show help
 help: ## Show this help message
@@ -93,6 +114,8 @@ help: ## Show this help message
 	@echo "  make client          - Run the client with microphone"
 	@echo "  make build           - Build both server and client images"
 	@echo "  make stop            - Stop all WhisperLive containers"
+	@echo "  make clear           - Clear all logs in the /logs directory"
+	@echo "  make nuke            - Complete rebuild: stop, clear, build, server, client"
 	@echo "  make check-cache     - Show cached model status and sizes"
 	@echo "  make clean-cache     - Remove cached models (force re-download)"
 	@echo ""
@@ -101,8 +124,10 @@ help: ## Show this help message
 	@echo "  make build-server-prod - Build production server (smaller, ~10GB)"
 	@echo "  make build-client    - Build client image"
 	@echo ""
-	@echo "Example with VAD tuning:"
+	@echo "Examples:"
 	@echo "  make client VAD_THRESHOLD=0.6 LOG_VERBOSE=true"
+	@echo "  make client TRIGGER_WORDS=\"computer alert help\""
+	@echo "  make client TRIGGER_WORDS=\"computer\" TRIGGER_OUTPUT_FILE=\"/output/logs/computer.log\""
 	@echo ""
 
 server:
@@ -143,6 +168,12 @@ client:
 	@echo ""
 	@echo "🎤 Initializing GPU audio client..."
 	@echo "🔗 Connecting to GPU transcription server..."
+	@if [ -n "$(TRIGGER_WORDS)" ]; then \
+		echo "🎯 Trigger Word Detection:"; \
+		echo "   - Words: $(TRIGGER_WORDS)"; \
+		echo "   - Output: $(TRIGGER_OUTPUT_FILE)"; \
+		echo "   - Stability Delay: $(TEXT_STABILITY_DELAY)s"; \
+	fi
 	@if [ "$(VAD_THRESHOLD)" != "0.5" ] || [ -n "$(VAD_NEG_THRESHOLD)" ] || [ "$(VAD_MIN_SPEECH_DURATION_MS)" != "250" ] || [ "$(VAD_MAX_SPEECH_DURATION_S)" != "30" ] || [ "$(VAD_MIN_SILENCE_DURATION_MS)" != "2000" ] || [ "$(VAD_SPEECH_PAD_MS)" != "400" ] || [ "$(VAD_WINDOW_SIZE_SAMPLES)" != "64" ] || [ "$(VAD_RETURN_SECONDS)" = "true" ]; then \
 		echo "🎛️  VAD Configuration:"; \
 		echo "   - Threshold: $(VAD_THRESHOLD)"; \
@@ -155,6 +186,9 @@ client:
 		echo "   - Return Seconds: $(VAD_RETURN_SECONDS)"; \
 	fi
 	@echo ""
+	@echo "📁 Setting up output directories with proper permissions..."
+	@mkdir -p "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
+	@chmod 755 "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
 	docker run -it --rm \
 		--device /dev/snd \
 		--group-add audio \
@@ -174,6 +208,9 @@ client:
 			--vad_speech_pad_ms $(VAD_SPEECH_PAD_MS) \
 			--vad_window_size_samples $(VAD_WINDOW_SIZE_SAMPLES) \
 			$(if $(filter true,$(VAD_RETURN_SECONDS)),--vad_return_seconds,) \
+			$(if $(TRIGGER_WORDS),--trigger_words $(TRIGGER_WORDS),) \
+			$(if $(TRIGGER_WORDS),--trigger_output_file $(TRIGGER_OUTPUT_FILE),) \
+			$(if $(TRIGGER_WORDS),--text_stability_delay $(TEXT_STABILITY_DELAY),) \
 			--log_dir $(LOG_DIR) \
 			$(if $(filter true,$(DISABLE_JSON_LOG)),--disable_json_log,) \
 			$(if $(filter true,$(DISABLE_TEXT_LOG)),--disable_text_log,) \
@@ -199,6 +236,18 @@ stop:
 	@echo "✅ All WhisperLive containers stopped and cleaned"
 	@echo "📦 Note: Model cache volumes are preserved for faster restarts"
 
+clear: ## Clear all logs and fix permissions
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║                     Clearing Log Directory                    ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "🗑️  Clearing and fixing permissions for output directories..."
+	@sudo rm -rf logs/* output/* 2>/dev/null || rm -rf logs/* output/* 2>/dev/null || true
+	@sudo chown -R $$USER:$$USER logs output 2>/dev/null || true
+	@mkdir -p logs output 2>/dev/null || true
+	@chmod 755 logs output 2>/dev/null || true
+	@echo "✅ All logs cleared and permissions fixed"
+
 check-cache: ## Show cached model status and sizes
 	@./scripts/check-cache.sh
 
@@ -215,6 +264,29 @@ clean-cache: ## Remove all cached models (will re-download on next start)
 	@echo "🗑️  Removing model cache volumes..."
 	@docker volume rm whisper-models huggingface-models openvino-models 2>/dev/null || true
 	@echo "✅ Model cache cleaned - models will re-download on next start"
+
+nuke: ## Complete rebuild: stop, clear, build, server, client
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║                         NUCLEAR REBUILD                       ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "🚨 Starting complete rebuild sequence..."
+	@echo "   1. Stopping all containers..."
+	@$(MAKE) --no-print-directory stop
+	@echo ""
+	@echo "   2. Clearing all logs..."
+	@$(MAKE) --no-print-directory clear
+	@echo ""
+	@echo "   3. Building fresh images..."
+	@$(MAKE) --no-print-directory build
+	@echo ""
+	@echo "   4. Starting server..."
+	@$(MAKE) --no-print-directory server
+	@echo ""
+	@echo "🎯 Server started! Waiting 3 seconds for initialization..."
+	@sleep 3
+	@echo "   5. Starting client..."
+	@$(MAKE) --no-print-directory client
 
 build: build-server build-client ## Build both server and client images
 

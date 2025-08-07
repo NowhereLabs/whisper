@@ -247,6 +247,26 @@ class ServeClientBase(object):
         except Exception as e:
             logging.error(f"[ERROR]: Sending data to client: {e}")
 
+    def send_vad_event_to_client(self, event_type, details=None):
+        """
+        Sends a VAD (Voice Activity Detection) event to the client over the websocket connection.
+        
+        Args:
+            event_type (str): The type of VAD event (e.g., "speech_start", "speech_end", "speech_chunk", "vad_filter")
+            details (dict, optional): Additional details about the VAD event
+        """
+        try:
+            message = {
+                "uid": self.client_uid,
+                "vad_event": {
+                    "type": event_type,
+                    "details": details or {}
+                }
+            }
+            self.websocket.send(json.dumps(message))
+        except Exception as e:
+            logging.error(f"[ERROR]: Sending VAD event to client: {e}")
+
     def disconnect(self):
         """
         Notify the client of disconnection and send a disconnect message.
