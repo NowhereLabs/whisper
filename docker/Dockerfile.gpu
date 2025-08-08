@@ -26,6 +26,6 @@ ENV LD_LIBRARY_PATH="/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/
 
 # Copy application code last (changes most frequently)
 COPY whisper_live /app/whisper_live
-COPY run_server.py /app/
+COPY utils/run_server.py /app/run_server.py
 
 CMD ["python", "run_server.py"]

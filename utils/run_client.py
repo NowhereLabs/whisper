@@ -64,14 +64,26 @@ class TranscriptionLogger:
                 f.write("="*80 + "\n\n")
             # Set file permissions to be readable/writable by owner and readable by others
             os.chmod(self.text_log_path, 0o644)
-            # Try to set ownership to real user if running as root
-            try:
-                real_uid = int(os.environ.get('SUDO_UID', os.getuid()))
-                real_gid = int(os.environ.get('SUDO_GID', os.getgid()))
-                if os.getuid() == 0 and real_uid != 0:
+        
+        # Windows automation log for typing events
+        self.automation_log_path = os.path.join(log_dir, f"automation_{self.session_id}.log")
+        with open(self.automation_log_path, 'w', encoding='utf-8') as f:
+            f.write(f"Windows Automation Log\n")
+            f.write(f"Session: {self.session_id}\n")
+            f.write(f"Started: {datetime.datetime.now().isoformat()}\n")
+            f.write("="*80 + "\n\n")
+        os.chmod(self.automation_log_path, 0o644)
+        
+        # Try to set ownership to real user if running as root for all log files
+        try:
+            real_uid = int(os.environ.get('SUDO_UID', os.getuid()))
+            real_gid = int(os.environ.get('SUDO_GID', os.getgid()))
+            if os.getuid() == 0 and real_uid != 0:
+                if self.enable_text:
                     os.chown(self.text_log_path, real_uid, real_gid)
-            except (KeyError, ValueError, OSError):
-                pass
+                os.chown(self.automation_log_path, real_uid, real_gid)
+        except (KeyError, ValueError, OSError):
+            pass
         
         # Statistics tracking
         self.stats = {
@@ -236,8 +248,20 @@ class TranscriptionLogger:
                 self.stats["trigger_words_detected"] += 1
             elif event_type == "statement_saved":
                 self.stats["trigger_statements_saved"] += 1
+            elif event_type == "text_typed":
+                # Track that text was typed to Windows
+                self.stats.setdefault("text_typed_count", 0)
+                self.stats["text_typed_count"] += 1
+                
+                # Log to separate automation log file
+                timestamp = datetime.datetime.now()
+                with open(self.automation_log_path, 'a', encoding='utf-8') as f:
+                    f.write(f"[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] AUTO-TYPED TO WINDOWS:\n")
+                    f.write(f"{statement}\n")
+                    f.write("-" * 80 + "\n")
             
-            if self.enable_text and self.verbose:
+            # Log other trigger events to text log in verbose mode
+            if self.enable_text and self.verbose and event_type != "text_typed":
                 timestamp = datetime.datetime.now()
                 with open(self.text_log_path, 'a', encoding='utf-8') as f:
                     f.write(f"\n[{timestamp.strftime('%H:%M:%S.%f')[:-3]}] ")
@@ -277,7 +301,8 @@ End Time: {datetime.datetime.now().isoformat()}
 
 🎯 TRIGGER WORD DETECTION:
 - Trigger Activations: {self.stats['trigger_words_detected']} 🔥
-- Statements Captured: {self.stats['trigger_statements_saved']} 📝"""
+- Statements Captured: {self.stats['trigger_statements_saved']} 📝
+- Texts Auto-Typed: {self.stats.get('text_typed_count', 0)} ⌨️"""
             
             summary += f"""
 
@@ -287,6 +312,8 @@ End Time: {datetime.datetime.now().isoformat()}
                 summary += f"- JSON: {self.json_log_path}\n"
             if self.enable_text:
                 summary += f"- Text: {self.text_log_path}\n"
+            if os.path.exists(self.automation_log_path):
+                summary += f"- Automation: {self.automation_log_path}\n"
             if self.trigger_output_file and (self.stats['trigger_words_detected'] > 0 or self.stats['trigger_statements_saved'] > 0):
                 summary += f"- Triggers: {self.trigger_output_file}\n"
             
@@ -556,18 +583,30 @@ if __name__ == '__main__':
                                 print(f"\n⚠️  Trigger statement saved: '{post_trigger_text.strip()[:50]}{'...' if len(post_trigger_text.strip()) > 50 else ''}'")
                                 
                                 # WSL auto-type the statement if enabled
+                                print(f"🔍 DEBUG: args.wsl_auto_type={args.wsl_auto_type}, WSL_TYPING_AVAILABLE={WSL_TYPING_AVAILABLE}")
                                 if args.wsl_auto_type and WSL_TYPING_AVAILABLE:
                                     try:
                                         print(f"⌨️  Auto-typing to Windows (delay: {args.type_delay_ms}ms)...")
+                                        print(f"🔍 DEBUG: About to call WSL_TYPER.type_text with: '{post_trigger_text.strip()}'")
                                         success = WSL_TYPER.type_text(post_trigger_text.strip(), args.type_delay_ms)
+                                        print(f"🔍 DEBUG: type_text returned: {success}")
                                         if success:
                                             print(f"✅ Text typed successfully into Windows")
+                                            # Log successful typing event
+                                            if transcription_logger:
+                                                print(f"🔍 DEBUG: Logging typing event to automation log")
+                                                transcription_logger.log_trigger_event("text_typed", 
+                                                                                    statement=post_trigger_text.strip())
                                         else:
                                             print(f"⚠️  Failed to type text into Windows")
                                     except Exception as e:
                                         print(f"⚠️  WSL auto-typing error: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                                 elif args.wsl_auto_type and not WSL_TYPING_AVAILABLE:
                                     print("⚠️  WSL auto-typing requested but not available")
+                                else:
+                                    print(f"🔍 DEBUG: Auto-typing conditions not met")
                                 
                                 # Log statement saved event
                                 if transcription_logger:

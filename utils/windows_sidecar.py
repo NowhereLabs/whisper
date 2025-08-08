@@ -51,13 +51,17 @@ class WindowsAutomation:
             return False
     
     def type_text(self, text, delay_ms=50):
-        """Type text into Windows applications"""
+        """Type text into Windows applications and press Enter"""
         if not self.available:
             return False, "PowerShell not available"
         
         try:
             # Escape special characters for SendKeys
             escaped_text = self._escape_sendkeys(text)
+            
+            # Always add Enter key at the end
+            escaped_text += "{ENTER}"
+            logger.info(f"Sending to PowerShell: '{escaped_text}'")
             
             ps_command = f'''
             Add-Type -AssemblyName System.Windows.Forms
@@ -121,7 +125,7 @@ def type_text():
         text = data['text']
         delay_ms = data.get('delay_ms', 50)
         
-        logger.info(f"Typing request: '{text[:50]}...' with {delay_ms}ms delay")
+        logger.info(f"Typing request: '{text[:50]}...' with {delay_ms}ms delay + ENTER")
         
         success, error_msg = windows_automation.type_text(text, delay_ms)
         

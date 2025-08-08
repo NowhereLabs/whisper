@@ -20,7 +20,7 @@ RUN apt update && apt install -y \
 RUN pip install --no-cache-dir -U "pip>=24"
 
 # create a working directory
-RUN mkdir /app
+RUN mkdir -p /app/utils
 WORKDIR /app
 
 # install the requirements for running the whisper-live client
@@ -28,7 +28,9 @@ COPY requirements/client.txt /app/
 RUN pip install --no-cache-dir -r client.txt && rm client.txt
 
 COPY whisper_live /app/whisper_live
-COPY run_client.py /app
+COPY utils/run_client.py /app/run_client.py
+COPY utils/windows_sidecar.py /app/utils/windows_sidecar.py
+COPY utils/run_input.py /app/utils/run_input.py
 COPY scripts/entrypoint.sh /app/
 
 # Make entrypoint executable

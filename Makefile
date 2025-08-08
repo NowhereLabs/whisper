@@ -59,13 +59,29 @@ TRIGGER_WORDS ?= computer
 
 # Trigger Output File - Where to save triggered transcriptions (absolute path)
 # File will contain timestamped transcriptions after trigger word detection
-# Default: /output/logs/triggers.log (inside Docker container, maps to ./logs/triggers.log)
-TRIGGER_OUTPUT_FILE ?= /output/logs/triggers.log
+# Default: /output/triggers.log (inside Docker container, maps to ./logs/triggers.log)
+TRIGGER_OUTPUT_FILE ?= /output/triggers.log
 
 # Text Stability Delay - Time to wait after text stops changing before saving (seconds)
 # Prevents saving incomplete transcriptions, waits for speech to finish
 # Default: 1.5s (good balance between responsiveness and completeness)
 TEXT_STABILITY_DELAY ?= 1.0
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║                      WINDOWS AUTOMATION (WSL2)                            ║
+# ║                     Auto-Type Transcriptions to Windows                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+
+# WSL Auto-Type - Enable automatic typing into Windows applications (true/false)
+# When true, transcribed text after trigger words will be typed into active Windows app
+# Requires Windows automation service running: ./scripts/start_windows_automation_service.sh
+# Default: true (auto-typing enabled)
+WSL_AUTO_TYPE ?= true
+
+# Type Delay - Delay between keystrokes in milliseconds (Range: 0-1000)
+# Lower values type faster but may overwhelm some applications
+# Default: 0ms (fastest typing)
+WSL_TYPE_DELAY_MS ?= 0
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║                          LOGGING CONFIGURATION                            ║
@@ -74,8 +90,8 @@ TEXT_STABILITY_DELAY ?= 1.0
 
 # Log Directory - Where to save transcription logs (absolute path recommended)
 # Logs include JSON data for analysis and human-readable text files
-# Default: /output/logs (inside Docker container, maps to ./logs on host)
-LOG_DIR ?= /output/logs
+# Default: /output (inside Docker container, maps to ./logs on host)
+LOG_DIR ?= /output
 
 # Disable JSON Logging - Turn off structured data logging (Range: true/false)
 # JSON logs contain timestamps, durations, and metadata for analysis
@@ -99,7 +115,7 @@ DISABLE_LOGGING ?= false
 
 
 
-.PHONY: server client stop clear check-cache clean-cache build build-server build-server-prod build-client nuke help compose-up compose-down compose-logs compose-build
+.PHONY: server client stop clear check-cache clean-cache build nuke help compose-up compose-down compose-logs automation-service
 
 # Default target: show help
 help: ## Show this help message
@@ -112,6 +128,7 @@ help: ## Show this help message
 	@echo "Main Targets:"
 	@echo "  make server          - Run the GPU server (with model cache)"
 	@echo "  make client          - Run orchestrated client with Windows automation"
+	@echo "  make automation-service - Start Windows automation service (for WSL→Windows typing)"
 	@echo "  make build           - Build both server and client images"
 	@echo "  make stop            - Stop all WhisperLive containers"
 	@echo "  make clear           - Clear all logs in the /logs directory"
@@ -123,12 +140,6 @@ help: ## Show this help message
 	@echo "  make compose-up      - Start server in background"
 	@echo "  make compose-down    - Stop and remove all compose services"
 	@echo "  make compose-logs    - View logs from all services"
-	@echo "  make compose-build   - Build server and client services"
-	@echo ""
-	@echo "Build Options:"
-	@echo "  make build-server    - Build server (fast, with cache, ~14GB)"
-	@echo "  make build-server-prod - Build production server (smaller, ~10GB)"
-	@echo "  make build-client    - Build client image"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make client VAD_THRESHOLD=0.6"
@@ -172,10 +183,12 @@ client: ## Run orchestrated client with Windows automation
 	@echo "🎤 Starting orchestrated client with Windows automation..."
 	@if [ -n "$(TRIGGER_WORDS)" ]; then \
 		echo "🎯 Trigger Words: $(TRIGGER_WORDS)"; \
-		echo "⌨️  Windows Auto-Typing: $(WSL_AUTO_TYPE)"; \
 	fi
-	@echo "💡 Recommended: Start Windows automation service first:"
-	@echo "   ./scripts/start_windows_automation_service.sh"
+	@echo "⌨️  Windows Auto-Typing: $(WSL_AUTO_TYPE)"
+	@if [ "$(WSL_AUTO_TYPE)" = "true" ]; then \
+		echo "💡 Recommended: Start Windows automation service first:"; \
+		echo "   make automation-service"; \
+	fi
 	@echo ""
 	VAD_THRESHOLD=$(VAD_THRESHOLD) \
 	TRIGGER_WORDS='$(TRIGGER_WORDS)' \
@@ -191,6 +204,8 @@ stop:
 	@echo ""
 	@echo "🛑 Stopping Docker Compose services..."
 	@docker-compose down 2>/dev/null || true
+	@echo "🛑 Stopping Windows automation service..."
+	@lsof -ti :8080 2>/dev/null | xargs kill -9 2>/dev/null || echo "   No service running on port 8080"
 	@echo "🛑 Stopping legacy server containers..."
 	@docker stop whisperlive-server-gpu 2>/dev/null || true
 	@docker rm whisperlive-server-gpu 2>/dev/null || true
@@ -201,7 +216,7 @@ stop:
 	@docker rm $$(docker ps -aq --filter ancestor=whisperlive-gpu) 2>/dev/null || true
 	@echo "🧹 Cleaning up containers..."
 	@docker container prune -f 2>/dev/null || true
-	@echo "✅ All WhisperLive containers stopped and cleaned"
+	@echo "✅ All WhisperLive services stopped and cleaned"
 	@echo "📦 Note: Model cache volumes are preserved for faster restarts"
 
 clear: ## Clear all logs and fix permissions
@@ -209,15 +224,39 @@ clear: ## Clear all logs and fix permissions
 	@echo "║                     Clearing Log Directory                    ║"
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "🗑️  Clearing and fixing permissions for output directories..."
-	@sudo rm -rf logs/* output/* 2>/dev/null || rm -rf logs/* output/* 2>/dev/null || true
-	@sudo chown -R $$USER:$$USER logs output 2>/dev/null || true
-	@mkdir -p logs output 2>/dev/null || true
-	@chmod 755 logs output 2>/dev/null || true
+	@echo "🗑️  Clearing and fixing permissions for logs directory..."
+	@sudo rm -rf logs/* 2>/dev/null || rm -rf logs/* 2>/dev/null || true
+	@sudo chown -R $$USER:$$USER logs 2>/dev/null || true
+	@mkdir -p logs 2>/dev/null || true
+	@chmod 755 logs 2>/dev/null || true
 	@echo "✅ All logs cleared and permissions fixed"
 
 check-cache: ## Show cached model status and sizes
-	@./scripts/check-cache.sh
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║                     WhisperLive Cache Status                  ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "📦 Docker Volumes (Model Cache):"
+	@echo "----------------------------------------"
+	@for volume in whisper-models huggingface-models openvino-models; do \
+		if docker volume inspect $$volume &>/dev/null; then \
+			echo "✅ $$volume: exists"; \
+			mountpoint=$$(docker volume inspect $$volume --format '{{.Mountpoint}}' 2>/dev/null); \
+			if [ -n "$$mountpoint" ] && [ -d "$$mountpoint" ]; then \
+				size=$$(sudo du -sh "$$mountpoint" 2>/dev/null | cut -f1 || echo "unknown"); \
+				echo "   📁 Size: $$size"; \
+				echo "   📍 Path: $$mountpoint"; \
+			fi; \
+		else \
+			echo "❌ $$volume: not created yet"; \
+		fi; \
+		echo ""; \
+	done
+	@echo "💡 Tips:"
+	@echo "• First server start: downloads models (~2-10GB)"
+	@echo "• Subsequent starts: uses cached models (fast!)"
+	@echo "• Run 'make clean-cache' to remove all cached models"
+	@echo "• Rebuilding Docker images won't affect model cache"
 
 clean-cache: ## Remove all cached models (will re-download on next start)
 	@echo "╔════════════════════════════════════════════════════════════════╗"
@@ -233,7 +272,7 @@ clean-cache: ## Remove all cached models (will re-download on next start)
 	@docker volume rm whisper-models huggingface-models openvino-models 2>/dev/null || true
 	@echo "✅ Model cache cleaned - models will re-download on next start"
 
-nuke: ## Complete rebuild: stop, clear, build, orchestrated stack
+nuke: ## Complete rebuild: stop, clear, build, start server and client
 	@echo "╔════════════════════════════════════════════════════════════════╗"
 	@echo "║                    NUCLEAR ORCHESTRATED REBUILD               ║"
 	@echo "╚════════════════════════════════════════════════════════════════╝"
@@ -246,74 +285,30 @@ nuke: ## Complete rebuild: stop, clear, build, orchestrated stack
 	@$(MAKE) --no-print-directory clear
 	@echo ""
 	@echo "   3. Building all services (server, client)..."
-	@$(MAKE) --no-print-directory compose-build
+	@$(MAKE) --no-print-directory build
 	@echo ""
-	@echo "   4. Starting orchestrated stack..."
-	@$(MAKE) --no-print-directory server
+	@echo "   4. Starting server in background..."
+	@$(MAKE) --no-print-directory compose-up
 	@echo ""
-	@echo "🎯 Orchestrated stack ready! Waiting 3 seconds for initialization..."
+	@echo "🎯 Server ready! Waiting 3 seconds for initialization..."
 	@sleep 3
 	@echo "   5. Launching interactive client..."
-	@echo "   🐳 Running orchestrated client with full Windows automation"
 	@$(MAKE) --no-print-directory client
 
-build: build-server build-client ## Build both server and client images
-
-build-server: ## Build server image with cache (default - fast rebuilds)
+build: ## Build all Docker Compose services
 	@echo "╔════════════════════════════════════════════════════════════════╗"
-	@echo "║        Building WhisperLive GPU Server (Cache Optimized)      ║"
+	@echo "║                Building All Compose Services                  ║"
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "🚀 Using BuildKit with persistent cache for fast rebuilds..."
-	@echo "   • First build: ~15 minutes (downloading packages)"
-	@echo "   • Subsequent builds: ~30 seconds (using cache)"
-	@echo "   • Image size: ~14 GB"
-	@echo ""
-	@DOCKER_BUILDKIT=1 docker build \
-		--progress=plain \
-		-f docker/Dockerfile.gpu \
-		-t whisperlive-gpu .
-	@echo "✅ GPU Server image built with caching!"
-
-build-server-prod: ## Build smaller production server image (multi-stage)
-	@echo "╔════════════════════════════════════════════════════════════════╗"
-	@echo "║      Building WhisperLive GPU Server (Production Build)       ║"
-	@echo "╚════════════════════════════════════════════════════════════════╝"
-	@echo ""
-	@echo "📦 Building smaller production image with multi-stage..."
-	@echo "   • Build time: ~15 minutes"
-	@echo "   • Image size: ~8-10 GB (30-40% smaller)"
-	@echo "   • Best for: deployment, not development"
-	@echo ""
-	@DOCKER_BUILDKIT=1 docker build \
-		--progress=plain \
-		-f docker/Dockerfile.gpu-multistage \
-		-t whisperlive-gpu:prod .
-	@echo "✅ Production GPU Server image built!"
-	@echo "   Tagged as: whisperlive-gpu:prod"
-
-build-client: ## Build client image
-	@echo "╔════════════════════════════════════════════════════════════════╗"
-	@echo "║                  Building WhisperLive GPU Client              ║"
-	@echo "╚════════════════════════════════════════════════════════════════╝"
-	@echo ""
-	@echo "🔨 Building GPU client image..."
-	docker build -f docker/Dockerfile.client -t whisperlive-client .
-	@echo "✅ GPU Client image built successfully!"
+	@echo "🔨 Building server and client services in parallel..."
+	docker-compose build --parallel
+	@echo "✅ All services built successfully!"
 
 # ╔════════════════════════════════════════════════════════════════╗
 # ║                     DOCKER COMPOSE TARGETS                    ║
 # ║              Orchestrated Multi-Service Deployment            ║
 # ╚════════════════════════════════════════════════════════════════╝
 
-compose-build: ## Build all Docker Compose services
-	@echo "╔════════════════════════════════════════════════════════════════╗"
-	@echo "║                Building All Compose Services                  ║"
-	@echo "╚════════════════════════════════════════════════════════════════╝"
-	@echo ""
-	@echo "🔨 Building server and client services..."
-	docker-compose build --parallel
-	@echo "✅ All services built successfully!"
 
 compose-up: ## Start server in background
 	@echo "╔════════════════════════════════════════════════════════════════╗"
@@ -321,9 +316,9 @@ compose-up: ## Start server in background
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
 	@echo "🚀 Starting GPU transcription server..."
-	@echo "   📁 Setting up output directories..."
-	@mkdir -p "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
-	@chmod 755 "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
+	@echo "   📁 Setting up logs directory..."
+	@mkdir -p "$$(pwd)/logs" 2>/dev/null || true
+	@chmod 755 "$$(pwd)/logs" 2>/dev/null || true
 	VAD_THRESHOLD=$(VAD_THRESHOLD) \
 	TRIGGER_WORDS='$(TRIGGER_WORDS)' \
 	WSL_AUTO_TYPE=$(WSL_AUTO_TYPE) \
@@ -334,7 +329,7 @@ compose-up: ## Start server in background
 	@echo "🔗 Server: http://localhost:9090"
 	@echo ""
 	@echo "💡 For Windows automation, start host service:"
-	@echo "   ./scripts/start_windows_automation_service.sh"
+	@echo "   make automation-service"
 	@echo "Next: Run 'make client' for interactive transcription"
 
 compose-down: ## Stop and remove all compose services
@@ -352,3 +347,37 @@ compose-logs: ## View logs from all running compose services
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
 	docker-compose logs -f
+
+automation-service: ## Start Windows automation service for WSL→Windows typing
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║             Windows Automation Service (WSL2)                 ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "🔧 Starting Windows Automation Service on WSL Host..."
+	@echo ""
+	@if ! grep -qi microsoft /proc/version 2>/dev/null; then \
+		echo "❌ This requires WSL2 (Windows Subsystem for Linux)"; \
+		exit 1; \
+	fi
+	@if ! command -v powershell.exe > /dev/null 2>&1; then \
+		echo "❌ PowerShell not available from WSL"; \
+		exit 1; \
+	fi
+	@echo "✅ WSL2 environment detected"
+	@echo "✅ PowerShell available"
+	@echo ""
+	@if ! python3 -c "import flask, requests" 2>/dev/null; then \
+		echo "📦 Installing Python dependencies..."; \
+		pip3 install flask requests; \
+	fi
+	@echo "🚀 Starting Windows Automation API service on port 8080..."
+	@echo "💡 The service will accept typing requests from Docker containers"
+	@echo ""
+	@echo "🎯 API Endpoints:"
+	@echo "   GET  /health - Service health check"
+	@echo "   POST /type   - Type text into Windows applications"
+	@echo "   GET  /status - Service capabilities"
+	@echo ""
+	@echo "🛑 Press Ctrl+C to stop the service"
+	@echo ""
+	@cd "$$(pwd)" && python3 utils/windows_sidecar.py

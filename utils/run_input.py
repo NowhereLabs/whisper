@@ -36,11 +36,13 @@ class WindowsAutomationClient:
             return False
             
         try:
+            print(f"🔍 DEBUG: Sending POST to {self.sidecar_url}/type")
             payload = {
                 'text': text,
                 'delay_ms': delay_ms
             }
-            response = requests.post(f"{self.sidecar_url}/type", json=payload, timeout=30)
+            response = requests.post(f"{self.sidecar_url}/type", json=payload, timeout=10)
+            print(f"🔍 DEBUG: Got response status: {response.status_code}")
             
             if response.status_code == 200:
                 result = response.json()

@@ -40,8 +40,7 @@ services:
       # WSL2 audio passthrough
       - /mnt/wslg:/mnt/wslg
       # Output logs
-      - ./logs:/output/logs
-      - ./output:/output/output
+      - ./logs:/output
     environment:
       # Audio configuration
       - PULSE_SERVER=/mnt/wslg/PulseServer
@@ -56,17 +55,17 @@ services:
       - WSL_TYPE_DELAY_MS=${WSL_TYPE_DELAY_MS:-0}
       - TEXT_STABILITY_DELAY=${TEXT_STABILITY_DELAY:-1.0}
     command: >
-      python utils/run_client.py 
+      python run_client.py 
         --server server 
         --port 9090 
         --model large-v3
         --vad_threshold ${VAD_THRESHOLD:-0.5}
         --trigger_words "${TRIGGER_WORDS:-computer}"
-        --trigger_output_file /output/logs/triggers.log
+        --trigger_output_file /output/triggers.log
         --text_stability_delay ${TEXT_STABILITY_DELAY:-1.0}
         --wsl_auto_type
         --type_delay_ms ${WSL_TYPE_DELAY_MS:-0}
-        --log_dir /output/logs
+        --log_dir /output
     stdin_open: true
     tty: true
     restart: "no"  # Don't auto-restart client (interactive)
