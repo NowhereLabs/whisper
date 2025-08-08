@@ -140,29 +140,25 @@ help: ## Show this help message
 
 server:
 	@echo "╔════════════════════════════════════════════════════════════════╗"
-	@echo "║                       WhisperLive GPU Server                  ║"
+	@echo "║                  WhisperLive Orchestrated Server              ║"
 	@echo "╠════════════════════════════════════════════════════════════════╣"
+	@echo "║ Architecture: Docker Compose Service                          ║"
 	@echo "║ Model: Whisper Large-v3 (GPU Backend)                         ║"
 	@echo "║ Port:  9090                                                    ║"
 	@echo "║ GPU:   CUDA (Required)                                         ║"
 	@echo "║ Cache: Persistent model storage enabled                       ║"
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "🔄 Preparing GPU server environment..."
-	@docker stop whisperlive-server-gpu 2>/dev/null || true
-	@docker rm whisperlive-server-gpu 2>/dev/null || true
-	@echo "🚀 Starting GPU server container with persistent model cache..."
+	@echo "🚀 Starting orchestrated GPU server..."
 	@echo "   📦 Models will be cached and reused between restarts"
+	@echo "   🔧 Stopping any existing services..."
+	@docker-compose down 2>/dev/null || true
 	@echo ""
-	docker run -d --name whisperlive-server-gpu \
-		-p 9090:9090 \
-		--gpus all \
-		-v whisper-models:/root/.cache/whisper-live \
-		-v huggingface-models:/root/.cache/huggingface \
-		-v openvino-models:/root/.cache/openvino_whisper_models \
-		whisperlive-gpu \
-		python3 run_server.py --port 9090 \
-			--backend faster_whisper
+	docker-compose up -d server
+	@echo ""
+	@echo "✅ Server started successfully!"
+	@echo "🔗 Server: http://localhost:9090"
+	@echo "💡 Next: Run 'make client' for interactive transcription"
 
 client: ## Run orchestrated client with Windows automation
 	@echo "╔════════════════════════════════════════════════════════════════╗"
@@ -238,27 +234,28 @@ clean-cache: ## Remove all cached models (will re-download on next start)
 	@docker volume rm whisper-models huggingface-models openvino-models 2>/dev/null || true
 	@echo "✅ Model cache cleaned - models will re-download on next start"
 
-nuke: ## Complete rebuild: stop, clear, build, server, client
+nuke: ## Complete rebuild: stop, clear, build, orchestrated stack
 	@echo "╔════════════════════════════════════════════════════════════════╗"
-	@echo "║                         NUCLEAR REBUILD                       ║"
+	@echo "║                    NUCLEAR ORCHESTRATED REBUILD               ║"
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "🚨 Starting complete rebuild sequence..."
-	@echo "   1. Stopping all containers..."
+	@echo "🚨 Starting complete orchestrated rebuild sequence..."
+	@echo "   1. Stopping all services..."
 	@$(MAKE) --no-print-directory stop
 	@echo ""
 	@echo "   2. Clearing all logs..."
 	@$(MAKE) --no-print-directory clear
 	@echo ""
-	@echo "   3. Building fresh images..."
-	@$(MAKE) --no-print-directory build
+	@echo "   3. Building all services (server, client, automation)..."
+	@$(MAKE) --no-print-directory compose-build
 	@echo ""
-	@echo "   4. Starting server..."
+	@echo "   4. Starting orchestrated stack..."
 	@$(MAKE) --no-print-directory server
 	@echo ""
-	@echo "🎯 Server started! Waiting 3 seconds for initialization..."
+	@echo "🎯 Orchestrated stack ready! Waiting 3 seconds for initialization..."
 	@sleep 3
-	@echo "   5. Starting client..."
+	@echo "   5. Launching interactive client..."
+	@echo "   🐳 Running orchestrated client with full Windows automation"
 	@$(MAKE) --no-print-directory client
 
 build: build-server build-client ## Build both server and client images
