@@ -99,7 +99,7 @@ DISABLE_LOGGING ?= false
 
 
 
-.PHONY: server client stop clear check-cache clean-cache build build-server build-server-prod build-client build-automation nuke help compose-up compose-down compose-logs compose-build
+.PHONY: server client stop clear check-cache clean-cache build build-server build-server-prod build-client nuke help compose-up compose-down compose-logs compose-build
 
 # Default target: show help
 help: ## Show this help message
@@ -120,16 +120,15 @@ help: ## Show this help message
 	@echo "  make clean-cache     - Remove cached models (force re-download)"
 	@echo ""
 	@echo "Docker Compose (Orchestrated Services):"
-	@echo "  make compose-up      - Start all services with Windows automation"
+	@echo "  make compose-up      - Start server in background"
 	@echo "  make compose-down    - Stop and remove all compose services"
 	@echo "  make compose-logs    - View logs from all services"
-	@echo "  make compose-build   - Build all compose services"
+	@echo "  make compose-build   - Build server and client services"
 	@echo ""
 	@echo "Build Options:"
 	@echo "  make build-server    - Build server (fast, with cache, ~14GB)"
 	@echo "  make build-server-prod - Build production server (smaller, ~10GB)"
 	@echo "  make build-client    - Build client image"
-	@echo "  make build-automation - Build Windows automation service"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make client VAD_THRESHOLD=0.6"
@@ -246,7 +245,7 @@ nuke: ## Complete rebuild: stop, clear, build, orchestrated stack
 	@echo "   2. Clearing all logs..."
 	@$(MAKE) --no-print-directory clear
 	@echo ""
-	@echo "   3. Building all services (server, client, automation)..."
+	@echo "   3. Building all services (server, client)..."
 	@$(MAKE) --no-print-directory compose-build
 	@echo ""
 	@echo "   4. Starting orchestrated stack..."
@@ -302,15 +301,6 @@ build-client: ## Build client image
 	docker build -f docker/Dockerfile.client -t whisperlive-client .
 	@echo "✅ GPU Client image built successfully!"
 
-build-automation: ## Build Windows automation service
-	@echo "╔════════════════════════════════════════════════════════════════╗"
-	@echo "║              Building Windows Automation Service              ║"
-	@echo "╚════════════════════════════════════════════════════════════════╝"
-	@echo ""
-	@echo "🔨 Building automation service with WSL interop bridge..."
-	docker build -f docker/Dockerfile.automation -t whisper-automation .
-	@echo "✅ Windows automation service built successfully!"
-
 # ╔════════════════════════════════════════════════════════════════╗
 # ║                     DOCKER COMPOSE TARGETS                    ║
 # ║              Orchestrated Multi-Service Deployment            ║
@@ -321,16 +311,16 @@ compose-build: ## Build all Docker Compose services
 	@echo "║                Building All Compose Services                  ║"
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "🔨 Building server, client, and automation services..."
+	@echo "🔨 Building server and client services..."
 	docker-compose build --parallel
 	@echo "✅ All services built successfully!"
 
-compose-up: ## Start all services (server + automation) in background
+compose-up: ## Start server in background
 	@echo "╔════════════════════════════════════════════════════════════════╗"
 	@echo "║                    Starting WhisperLive Stack                 ║"
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "🚀 Starting server and Windows automation service..."
+	@echo "🚀 Starting GPU transcription server..."
 	@echo "   📁 Setting up output directories..."
 	@mkdir -p "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
 	@chmod 755 "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
@@ -339,12 +329,12 @@ compose-up: ## Start all services (server + automation) in background
 	WSL_AUTO_TYPE=$(WSL_AUTO_TYPE) \
 	WSL_TYPE_DELAY_MS=$(WSL_TYPE_DELAY_MS) \
 	TEXT_STABILITY_DELAY=$(TEXT_STABILITY_DELAY) \
-	docker-compose up -d server automation
-	@echo "✅ Services started in background!"
+	docker-compose up -d server
+	@echo "✅ Server started in background!"
 	@echo "🔗 Server: http://localhost:9090"
-	@echo "🔗 Automation: http://localhost:8080"
 	@echo ""
-	@echo "💡 Host service recommended: ./scripts/start_windows_automation_service.sh"
+	@echo "💡 For Windows automation, start host service:"
+	@echo "   ./scripts/start_windows_automation_service.sh"
 	@echo "Next: Run 'make client' for interactive transcription"
 
 compose-down: ## Stop and remove all compose services

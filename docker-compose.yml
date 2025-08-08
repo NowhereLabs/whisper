@@ -1,43 +1,4 @@
 services:
-  # Windows automation service - Hybrid approach
-  # Checks for host service, starts container fallback if needed
-  automation:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.automation  
-    container_name: whisper-automation
-    ports:
-      - "8080:8080"
-    volumes:
-      # Mount for fallback container mode (if host service fails)
-      - /mnt:/mnt
-      - /run/WSL:/run/WSL
-    environment:
-      - WSL_INTEROP=${WSL_INTEROP:-/run/WSL/interop}
-      - AUTOMATION_MODE=hybrid  # hybrid, container, or host
-    command: >
-      sh -c "
-        echo '🔧 Windows Automation Service - Hybrid Mode'
-        echo '📍 Checking if host service is already running...'
-        
-        if wget -q --spider http://host.docker.internal:8080/health --timeout=3; then
-          echo '✅ Host service found - acting as health check only'
-          echo 'Container will monitor host service availability'
-          while wget -q --spider http://host.docker.internal:8080/health --timeout=5; do
-            sleep 30
-          done
-          echo '❌ Host service became unavailable - container should restart'
-          exit 1
-        else
-          echo '🚀 No host service - starting container automation service'
-          echo '⚠️  Note: Container PowerShell may have limitations'
-          python3 windows_sidecar.py
-        fi
-      "
-    restart: unless-stopped
-    networks:
-      - whisper-network
-
   # GPU transcription server
   server:
     build:
@@ -71,7 +32,6 @@ services:
     container_name: whisper-client
     depends_on:
       - server
-      - automation
     devices:
       - /dev/snd:/dev/snd
     group_add:
