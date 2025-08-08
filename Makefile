@@ -99,7 +99,7 @@ DISABLE_LOGGING ?= false
 
 
 
-.PHONY: server client stop clear check-cache clean-cache build build-server build-server-prod build-client build-automation nuke help compose-up compose-down compose-client compose-logs compose-build
+.PHONY: server client stop clear check-cache clean-cache build build-server build-server-prod build-client build-automation nuke help compose-up compose-down compose-logs compose-build
 
 # Default target: show help
 help: ## Show this help message
@@ -111,7 +111,7 @@ help: ## Show this help message
 	@echo ""
 	@echo "Main Targets:"
 	@echo "  make server          - Run the GPU server (with model cache)"
-	@echo "  make client          - Run the client with microphone"
+	@echo "  make client          - Run orchestrated client with Windows automation"
 	@echo "  make build           - Build both server and client images"
 	@echo "  make stop            - Stop all WhisperLive containers"
 	@echo "  make clear           - Clear all logs in the /logs directory"
@@ -121,7 +121,6 @@ help: ## Show this help message
 	@echo ""
 	@echo "Docker Compose (Orchestrated Services):"
 	@echo "  make compose-up      - Start all services with Windows automation"
-	@echo "  make compose-client  - Run interactive client with full stack"
 	@echo "  make compose-down    - Stop and remove all compose services"
 	@echo "  make compose-logs    - View logs from all services"
 	@echo "  make compose-build   - Build all compose services"
@@ -133,9 +132,10 @@ help: ## Show this help message
 	@echo "  make build-automation - Build Windows automation service"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make client VAD_THRESHOLD=0.6 LOG_VERBOSE=true"
+	@echo "  make client VAD_THRESHOLD=0.6"
 	@echo "  make client TRIGGER_WORDS=\"computer alert help\""
-	@echo "  make client TRIGGER_WORDS=\"computer\" TRIGGER_OUTPUT_FILE=\"/output/logs/computer.log\""
+	@echo "  make client TRIGGER_WORDS=\"computer\" WSL_AUTO_TYPE=true"
+	@echo "  make compose-up  # Start services, then make client"
 	@echo ""
 
 server:
@@ -164,77 +164,42 @@ server:
 		python3 run_server.py --port 9090 \
 			--backend faster_whisper
 
-client:
+client: ## Run orchestrated client with Windows automation
 	@echo "╔════════════════════════════════════════════════════════════════╗"
-	@echo "║                      WhisperLive GPU Client                   ║"
+	@echo "║                  WhisperLive Orchestrated Client              ║"
 	@echo "╠════════════════════════════════════════════════════════════════╣"
-	@echo "║ Server: localhost:9090                                         ║"
-	@echo "║ Model:  large-v3 (GPU Optimized)                              ║"
-	@echo "║ Audio:  Microphone input via Docker                           ║"
-	@echo "║ Note:   WSL2 audio passthrough enabled                        ║"
+	@echo "║ Architecture: Docker Compose Multi-Service                    ║"
+	@echo "║ Server: Containerized GPU transcription                       ║"
+	@echo "║ Client: Containerized audio processing                        ║"
+	@echo "║ Automation: Windows typing via host bridge                    ║"
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "🎤 Initializing GPU audio client..."
-	@echo "🔗 Connecting to GPU transcription server..."
+	@echo "🎤 Starting orchestrated client with Windows automation..."
 	@if [ -n "$(TRIGGER_WORDS)" ]; then \
-		echo "🎯 Trigger Word Detection:"; \
-		echo "   - Words: $(TRIGGER_WORDS)"; \
-		echo "   - Output: $(TRIGGER_OUTPUT_FILE)"; \
-		echo "   - Stability Delay: $(TEXT_STABILITY_DELAY)s"; \
+		echo "🎯 Trigger Words: $(TRIGGER_WORDS)"; \
+		echo "⌨️  Windows Auto-Typing: $(WSL_AUTO_TYPE)"; \
 	fi
-	@if [ "$(VAD_THRESHOLD)" != "0.5" ] || [ -n "$(VAD_NEG_THRESHOLD)" ] || [ "$(VAD_MIN_SPEECH_DURATION_MS)" != "250" ] || [ "$(VAD_MAX_SPEECH_DURATION_S)" != "30" ] || [ "$(VAD_MIN_SILENCE_DURATION_MS)" != "2000" ] || [ "$(VAD_SPEECH_PAD_MS)" != "400" ] || [ "$(VAD_WINDOW_SIZE_SAMPLES)" != "64" ] || [ "$(VAD_RETURN_SECONDS)" = "true" ]; then \
-		echo "🎛️  VAD Configuration:"; \
-		echo "   - Threshold: $(VAD_THRESHOLD)"; \
-		echo "   - Negative Threshold: $(VAD_NEG_THRESHOLD)"; \
-		echo "   - Min Speech Duration: $(VAD_MIN_SPEECH_DURATION_MS)ms"; \
-		echo "   - Max Speech Duration: $(VAD_MAX_SPEECH_DURATION_S)s"; \
-		echo "   - Min Silence Duration: $(VAD_MIN_SILENCE_DURATION_MS)ms"; \
-		echo "   - Speech Padding: $(VAD_SPEECH_PAD_MS)ms"; \
-		echo "   - Window Size: $(VAD_WINDOW_SIZE_SAMPLES) samples"; \
-		echo "   - Return Seconds: $(VAD_RETURN_SECONDS)"; \
-	fi
+	@echo "💡 Recommended: Start Windows automation service first:"
+	@echo "   ./scripts/start_windows_automation_service.sh"
 	@echo ""
-	@echo "📁 Setting up output directories with proper permissions..."
-	@mkdir -p "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
-	@chmod 755 "$$(pwd)/logs" "$$(pwd)/output" 2>/dev/null || true
-	docker run -it --rm \
-		--device /dev/snd \
-		--group-add audio \
-		-e PULSE_SERVER=/mnt/wslg/PulseServer \
-		-e ALSA_PCM_CARD=default \
-		-e ALSA_PCM_DEVICE=0 \
-		-v /mnt/wslg:/mnt/wslg \
-		-v $$(pwd):/output \
-		--network host \
-		whisperlive-client \
-		python run_client.py --server localhost --port 9090 --model large-v3 \
-			--vad_threshold $(VAD_THRESHOLD) \
-			$(if $(VAD_NEG_THRESHOLD),--vad_neg_threshold $(VAD_NEG_THRESHOLD),) \
-			--vad_min_speech_duration_ms $(VAD_MIN_SPEECH_DURATION_MS) \
-			--vad_max_speech_duration_s $(VAD_MAX_SPEECH_DURATION_S) \
-			--vad_min_silence_duration_ms $(VAD_MIN_SILENCE_DURATION_MS) \
-			--vad_speech_pad_ms $(VAD_SPEECH_PAD_MS) \
-			--vad_window_size_samples $(VAD_WINDOW_SIZE_SAMPLES) \
-			$(if $(filter true,$(VAD_RETURN_SECONDS)),--vad_return_seconds,) \
-			$(if $(TRIGGER_WORDS),--trigger_words $(TRIGGER_WORDS),) \
-			$(if $(TRIGGER_WORDS),--trigger_output_file $(TRIGGER_OUTPUT_FILE),) \
-			$(if $(TRIGGER_WORDS),--text_stability_delay $(TEXT_STABILITY_DELAY),) \
-			--log_dir $(LOG_DIR) \
-			$(if $(filter true,$(DISABLE_JSON_LOG)),--disable_json_log,) \
-			$(if $(filter true,$(DISABLE_TEXT_LOG)),--disable_text_log,) \
-			$(if $(filter true,$(LOG_VERBOSE)),--log_verbose,) \
-			$(if $(filter true,$(DISABLE_LOGGING)),--disable_logging,) \
-			$(ARGS)
+	VAD_THRESHOLD=$(VAD_THRESHOLD) \
+	TRIGGER_WORDS='$(TRIGGER_WORDS)' \
+	WSL_AUTO_TYPE=$(WSL_AUTO_TYPE) \
+	WSL_TYPE_DELAY_MS=$(WSL_TYPE_DELAY_MS) \
+	TEXT_STABILITY_DELAY=$(TEXT_STABILITY_DELAY) \
+	docker-compose run --rm client
 
 stop:
 	@echo "╔════════════════════════════════════════════════════════════════╗"
 	@echo "║                      Stopping WhisperLive                     ║"
 	@echo "╚════════════════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "🛑 Stopping server containers..."
+	@echo "🛑 Stopping Docker Compose services..."
+	@docker-compose down 2>/dev/null || true
+	@echo "🛑 Stopping legacy server containers..."
 	@docker stop whisperlive-server-gpu 2>/dev/null || true
 	@docker rm whisperlive-server-gpu 2>/dev/null || true
-	@echo "🛑 Stopping client containers..."
+	@echo "🛑 Stopping any remaining containers..."
 	@docker stop $$(docker ps -q --filter ancestor=whisperlive-client) 2>/dev/null || true
 	@docker rm $$(docker ps -aq --filter ancestor=whisperlive-client) 2>/dev/null || true
 	@docker stop $$(docker ps -q --filter ancestor=whisperlive-gpu) 2>/dev/null || true  
@@ -383,25 +348,7 @@ compose-up: ## Start all services (server + automation) in background
 	@echo "🔗 Automation: http://localhost:8080"
 	@echo ""
 	@echo "💡 Host service recommended: ./scripts/start_windows_automation_service.sh"
-	@echo "Next: Run 'make compose-client' for interactive transcription"
-
-compose-client: ## Run interactive client with full orchestrated stack
-	@echo "╔════════════════════════════════════════════════════════════════╗"
-	@echo "║                  WhisperLive Compose Client                   ║"
-	@echo "╚════════════════════════════════════════════════════════════════╝"
-	@echo ""
-	@echo "🎤 Starting orchestrated client with Windows automation..."
-	@if [ -n "$(TRIGGER_WORDS)" ]; then \
-		echo "🎯 Trigger Words: $(TRIGGER_WORDS)"; \
-		echo "⌨️  Windows Auto-Typing: $(WSL_AUTO_TYPE)"; \
-	fi
-	@echo ""
-	VAD_THRESHOLD=$(VAD_THRESHOLD) \
-	TRIGGER_WORDS='$(TRIGGER_WORDS)' \
-	WSL_AUTO_TYPE=$(WSL_AUTO_TYPE) \
-	WSL_TYPE_DELAY_MS=$(WSL_TYPE_DELAY_MS) \
-	TEXT_STABILITY_DELAY=$(TEXT_STABILITY_DELAY) \
-	docker-compose run --rm client
+	@echo "Next: Run 'make client' for interactive transcription"
 
 compose-down: ## Stop and remove all compose services
 	@echo "╔════════════════════════════════════════════════════════════════╗"
